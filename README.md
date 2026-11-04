@@ -141,6 +141,14 @@ The Potential Break column(s) is an important feature for highlighting anomalous
 * Document findings and rerun tests with modified payloads if needed to further investigate anomalies.
 * It is recommended to send the payloads multiple times and review the results as the AI/LLM may change their behaviour by replicating the requests.
 
+### Streaming response warnings
+
+Burp may reject requests made by extensions with `Streaming response received` when it classifies the response as streaming. AI Prompt Fuzzer reports this in the extension's standard output and displays a persistent warning in its main tab, including the number of affected requests since the extension loaded. These requests were **not analysed**, and are not negative findings. Failed attempts count towards fuzzing progress; AI vs AI stops when it cannot obtain the response.
+
+The warning's **Open Burp settings** button opens Settings on Burp 2025.8 or later; older versions show manual navigation instructions. Navigate to **Network > HTTP > Streaming responses** and review **Treat responses with the text/event-stream MIME type as streaming** and any matching URL rules. The supported API cannot select or highlight that setting automatically. The extension does not change any settings.
+
+Disabling streaming classification may let Burp buffer responses that eventually finish, but this is a project-wide change and streams that never finish may time out. Alternatively, request non-streaming output if the target supports it. Retry affected requests after making changes. Receiving an SSE response does not reconstruct its text: keyword phrases split across events may still be missed. Burp may continue to emit its own stack traces in the error log.
+
 ## Here are some tutorial videos (click to watch in YouTube):
 ### AI vs AI Mode Demo:
 [![AI Prompt Fuzzer - AI vs AI Mode](https://img.youtube.com/vi/4IzjIjMWNWk/maxresdefault.jpg)](https://www.youtube.com/watch?v=4IzjIjMWNWk)
