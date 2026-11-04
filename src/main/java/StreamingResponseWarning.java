@@ -22,7 +22,11 @@ final class StreamingResponseWarning extends JPanel {
     StreamingResponseWarning(Consumer<String> output, Runnable openSettings) {
         super(new BorderLayout(8, 4));
         this.output = output;
-        setBorder(BorderFactory.createTitledBorder("Streaming response warning"));
+        setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder(
+                        BorderFactory.createLineBorder(new Color(0xE58A2B), 2),
+                        "Streaming response warning"),
+                BorderFactory.createEmptyBorder(4, 8, 8, 8)));
         add(summary, BorderLayout.NORTH);
         JTextArea guidance = new JTextArea(GUIDANCE);
         guidance.setEditable(false);
