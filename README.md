@@ -29,7 +29,7 @@ You can skip this section and jump to **Installation in Burp Suite**, if you pla
 If you want to compile and install your own version, the process is easy and straight forward, just follow the instructions below.
 ### Prerequisites
 Ensure you have the following installed:
-* Java Development Kit (JDK): Version 8 or higher.
+* Java Development Kit (JDK): Version 17 or higher.
 * Apache Maven: Used to manage dependencies and build the project. You can install it from [Maven’s official site](https://maven.apache.org/).
 ### Download the Source Code
 Download or clone the source code from the repository
@@ -42,7 +42,22 @@ Run the Maven package command to compile the project and package it into a JAR f
 ```
 mvn clean package
 ```
-After the build completes, the compiled JAR file (AI_Prompt_Fuzzer.jar) will be in the target directory.
+After the build completes, the compiled JAR file (`AI_Prompt_Fuzzer-1.0-SNAPSHOT.jar`) will be in the `target` directory.
+
+### Automated GitHub releases
+
+The release workflow builds and publishes the extension when a tag starting with `v` is pushed. The tagged commit must contain `.github/workflows/release.yml`, and GitHub Actions must be enabled in the repository (including forks).
+
+From the branch containing the changes you want to release, create and push a new tag:
+
+```sh
+git tag v3.0.0-streaming-warning.1
+git push origin v3.0.0-streaming-warning.1
+```
+
+GitHub Actions builds the tagged source using Java 17 and Maven, runs the streaming warning regression checks, then creates a release with `AI_Prompt_Fuzzer.jar` and its SHA-256 checksum. Tags containing a hyphen are published as pre-releases; other `v*` tags produce normal releases. Branch pushes alone do not publish anything. This workflow does not require a personal access token; it uses GitHub's built-in token with repository contents write permission.
+
+Use a fresh tag for each release. Do not manually create a release for the tag first: the workflow creates it after successful validation and will not overwrite an existing release. If a run fails, inspect the repository's Actions tab before retrying. If a release was already created, inspect its assets before taking further action. Compilation and automated checks do not replace testing the extension inside Burp.
 
 ## Installation in Burp Suite  
 ### From Burp BApp Store:
