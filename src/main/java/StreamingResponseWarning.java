@@ -17,6 +17,7 @@ final class StreamingResponseWarning extends JPanel {
 
     private final AtomicInteger rejectedRequests = new AtomicInteger();
     private final JLabel summary = new JLabel();
+    private final JLabel batchStatus = new JLabel();
     private final Consumer<String> output;
 
     StreamingResponseWarning(Consumer<String> output, Runnable openSettings) {
@@ -28,6 +29,7 @@ final class StreamingResponseWarning extends JPanel {
                         "Streaming response warning"),
                 BorderFactory.createEmptyBorder(4, 8, 8, 8)));
         add(summary, BorderLayout.NORTH);
+        add(batchStatus, BorderLayout.SOUTH);
         JTextArea guidance = new JTextArea(GUIDANCE);
         guidance.setEditable(false);
         guidance.setLineWrap(true);
@@ -68,5 +70,16 @@ final class StreamingResponseWarning extends JPanel {
             error = error.getCause();
         }
         return false;
+    }
+
+    void reportStoppedBatch(int unsentRequests) {
+        String message = "Fuzzing stopped after a streaming rejection. Requests not sent: " + unsentRequests
+                + ". Adjust the settings and start a new run to retry.";
+        output.accept("[W]: " + message);
+        SwingUtilities.invokeLater(() -> {
+            batchStatus.setText(message);
+            revalidate();
+            repaint();
+        });
     }
 }

@@ -3,6 +3,9 @@ import java.awt.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /** Dependency-free regression checks; run with the commands in src/test/README.md. */
 public class StreamingResponseWarningTest {
@@ -36,7 +39,7 @@ public class StreamingResponseWarningTest {
         SwingUtilities.invokeAndWait(() -> {
             check(warning[0].isVisible(), "Warning remains visible after requests finish");
             for (Component component : warning[0].getComponents()) {
-                if (component instanceof JLabel) {
+                if (component instanceof JLabel && ((JLabel) component).getText().startsWith("Requests not analysed")) {
                     check(((JLabel) component).getText().endsWith(": 2"), "Accurate rejected-request count");
                 }
                 if (component instanceof JButton) {
@@ -48,7 +51,66 @@ public class StreamingResponseWarningTest {
         check(output.size() == 2, "Every rejected request is logged");
         check(output.get(0).contains(StreamingResponseWarning.GUIDANCE), "First warning includes recovery steps");
         check(output.get(1).contains("request not analysed"), "Repeated warning explains missing results");
+        warning[0].reportStoppedBatch(12);
+        SwingUtilities.invokeAndWait(() -> {
+            boolean found = false;
+            for (Component component : warning[0].getComponents()) {
+                if (component instanceof JLabel && ((JLabel) component).getText().contains("Requests not sent: 12")) {
+                    found = true;
+                }
+            }
+            check(found, "Stopped batch and unsent count are visible");
+        });
+        check(output.get(2).contains("Requests not sent: 12"), "Stopped batch is logged");
+        checkBatchStops(streaming);
         System.out.println("StreamingResponseWarning regression checks passed.");
+    }
+
+    private static void checkBatchStops(RuntimeException streaming) throws Exception {
+        StreamingRequestBatch batch = new StreamingRequestBatch();
+        AtomicInteger sends = new AtomicInteger();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var inFlight = executor.submit(() -> batch.send(() -> {
+                sends.incrementAndGet();
+                started.countDown();
+                try {
+                    check(finish.await(5, TimeUnit.SECONDS), "In-flight request released");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("In-flight request must not be interrupted", error);
+                }
+                return "response";
+            }));
+            check(started.await(5, TimeUnit.SECONDS), "Request started before rejection");
+            try {
+                batch.send(() -> { sends.incrementAndGet(); throw streaming; });
+                throw new AssertionError("Rejection must reach the existing warning handler");
+            } catch (RuntimeException error) {
+                check(error == streaming, "Original rejection preserved");
+            }
+            for (int i = 0; i < 20; i++) {
+                check(batch.send(() -> { sends.incrementAndGet(); return "unexpected"; }).isEmpty(),
+                        "Pending request skipped");
+            }
+            finish.countDown();
+            check(inFlight.get(5, TimeUnit.SECONDS).orElseThrow().equals("response"), "In-flight result preserved");
+            check(sends.get() == 2 && batch.attemptedRequests() == 2, "Only started requests counted");
+        } finally {
+            finish.countDown();
+            executor.shutdownNow();
+        }
+        StreamingRequestBatch retry = new StreamingRequestBatch();
+        RuntimeException unrelated = new RuntimeException("Connection timed out");
+        try {
+            retry.send(() -> { throw unrelated; });
+        } catch (RuntimeException error) {
+            check(error == unrelated, "Unrelated error preserved");
+        }
+        check(!retry.isStopped(), "Unrelated errors do not stop a batch");
+        check(retry.send(() -> "retry").orElseThrow().equals("retry"), "A new run can send requests");
     }
 
     private static void check(boolean condition, String description) {

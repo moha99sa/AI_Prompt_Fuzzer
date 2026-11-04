@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -1219,6 +1220,7 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
             SwingWorker<Void, Integer> worker = new SwingWorker<>() {
                 // Track the number of completed requests
                 private int completedRequests = 0;
+                private final StreamingRequestBatch batch = new StreamingRequestBatch();
 
                 @Override
                 protected Void doInBackground() throws Exception {
@@ -1226,6 +1228,9 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                     executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
 
                     for (int i = 0; i < totalPayloads; i++) {
+                        if (batch.isStopped()) {
+                            break;
+                        }
 
                         Element payloadElement = (Element) payloadList.item(i);
 
@@ -1265,7 +1270,12 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                             if (modifiedRequest.hasHeader("Host") && !modifiedRequest.method().isEmpty()) {
                                 Runnable requestTask = () -> {
                                     try {
-                                        HttpResponse response = api.http().sendRequest(modifiedRequest).response();
+                                        Optional<HttpResponse> received = batch.send(
+                                                () -> api.http().sendRequest(modifiedRequest).response());
+                                        if (received.isEmpty()) {
+                                            return;
+                                        }
+                                        HttpResponse response = received.get();
 
                                         // Check if the response contains a valid potential
                                         boolean isValid = isPotential(keywords,response.bodyToString());
@@ -1289,7 +1299,7 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                                             Thread.currentThread().interrupt();
                                         }
                                     } finally {
-                                        // Progress counts finished attempts, including requests that could not be analysed.
+                                        // Account for finished tasks, including rejected or skipped requests.
                                         synchronized (this) {
                                             completedRequests++;
                                             publish((completedRequests * 100) / totalPayloads);
@@ -1313,6 +1323,9 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                     executor.shutdown();
                     while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
                         // Keep the run active until all submitted requests have finished.
+                    }
+                    if (batch.isStopped()) {
+                        streamingResponseWarning.reportStoppedBatch(totalPayloads - batch.attemptedRequests());
                     }
                     isSendPayloadsRunning = false;
                     return null;
