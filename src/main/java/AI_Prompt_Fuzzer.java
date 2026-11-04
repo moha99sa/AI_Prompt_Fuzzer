@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -68,6 +69,7 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
     private NodeList payloadList;
     // Declare buttonPanel
     private JPanel buttonPanel;
+    private StreamingResponseWarning streamingResponseWarning;
     // URL encoding option
     private final JCheckBox urlEncodePayloads = new JCheckBox("URLEncode payloads");
     // escape (") and (\) option
@@ -173,6 +175,9 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
 
     private void createUI() {
         JPanel mainPanel = new JPanel(new BorderLayout());
+        streamingResponseWarning = new StreamingResponseWarning(
+                message -> api.logging().logToOutput(message), this::openStreamingSettings);
+        mainPanel.add(streamingResponseWarning, BorderLayout.NORTH);
 
         // Using httpRequestEditor
         httpRequestEditor = api.userInterface().createHttpRequestEditor();
@@ -619,9 +624,9 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                                 return response.bodyToString();
 
                             } catch (Exception e) {
-                                //JOptionPane.showMessageDialog(null, "Error processing request: " + e.getMessage());
-                                api.logging().logToOutput("[E]: Error processing request: " + e.getMessage());
-                                //resetAIvsAIButton();
+                                if (!streamingResponseWarning.reportIfStreaming(e)) {
+                                    api.logging().logToOutput("[E]: Error processing request: " + e.getMessage());
+                                }
                             }
                         } else {
                             JOptionPane.showMessageDialog(null, "Selected Request is invalid.");
@@ -633,7 +638,6 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                         resetAIvsAIUI();
                         return null;
                     }
-                    resetAIvsAIUI();
                     return null;
                 }
 
@@ -655,6 +659,8 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                                 aIvsAI_progressBar.setValue(progress);
                             }
                             runAiVsAiIteration(systemPrompt, appResponse, remainingMessages);
+                        } else {
+                            resetAIvsAIUI();
                         }
                     } catch (Exception e) {
                         api.logging().logToOutput("[E]: Error retrieving app response: " + e.getMessage());
@@ -663,6 +669,23 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
             };
             worker.execute(); // Start the SwingWorker task
         });
+    }
+
+    private void openStreamingSettings() {
+        try {
+            api.userInterface().openSettingsWindow();
+        } catch (NoSuchMethodError | AbstractMethodError e) {
+            // Opening Settings was added in Burp 2025.8; older supported versions need manual navigation.
+            JOptionPane.showMessageDialog(streamingResponseWarning,
+                    "Open Burp Settings manually, then select Network > HTTP > Streaming responses.\n"
+                            + "Review 'Treat responses with the text/event-stream MIME type as streaming'.",
+                    "Streaming response settings", JOptionPane.INFORMATION_MESSAGE);
+        } catch (RuntimeException e) {
+            api.logging().logToOutput("[W]: Could not open Burp Settings: " + e.getMessage());
+            JOptionPane.showMessageDialog(streamingResponseWarning,
+                    "Could not open Settings automatically. Select Settings > Network > HTTP > Streaming responses.",
+                    "Streaming response settings", JOptionPane.WARNING_MESSAGE);
+        }
     }
 
     private void resetAIvsAIUI(){
@@ -1197,6 +1220,7 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
             SwingWorker<Void, Integer> worker = new SwingWorker<>() {
                 // Track the number of completed requests
                 private int completedRequests = 0;
+                private final StreamingRequestBatch batch = new StreamingRequestBatch();
 
                 @Override
                 protected Void doInBackground() throws Exception {
@@ -1204,6 +1228,9 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                     executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
 
                     for (int i = 0; i < totalPayloads; i++) {
+                        if (batch.isStopped()) {
+                            break;
+                        }
 
                         Element payloadElement = (Element) payloadList.item(i);
 
@@ -1243,7 +1270,12 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
                             if (modifiedRequest.hasHeader("Host") && !modifiedRequest.method().isEmpty()) {
                                 Runnable requestTask = () -> {
                                     try {
-                                        HttpResponse response = api.http().sendRequest(modifiedRequest).response();
+                                        Optional<HttpResponse> received = batch.send(
+                                                () -> api.http().sendRequest(modifiedRequest).response());
+                                        if (received.isEmpty()) {
+                                            return;
+                                        }
+                                        HttpResponse response = received.get();
 
                                         // Check if the response contains a valid potential
                                         boolean isValid = isPotential(keywords,response.bodyToString());
@@ -1257,18 +1289,21 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
 
                                         logRequestResponse(modifiedRequest, response, isValid, aiResponse);
 
-                                        // Update completed requests and publish overall progress
-                                        synchronized (this) {
-                                            completedRequests++;
-                                            int progress = (completedRequests * 100) / totalPayloads;
-                                            publish(progress); // Update progress
-                                        }
-
                                         // Small delay between requests to avoid overwhelming the system
                                         TimeUnit.MILLISECONDS.sleep(100);
                                     } catch (Exception e) {
-                                        //JOptionPane.showMessageDialog(null, "Error processing request: " + e.getMessage());
-                                        api.logging().logToOutput("[E]: Error processing request: " + e.getMessage());
+                                        if (!streamingResponseWarning.reportIfStreaming(e)) {
+                                            api.logging().logToOutput("[E]: Error processing request: " + e.getMessage());
+                                        }
+                                        if (e instanceof InterruptedException) {
+                                            Thread.currentThread().interrupt();
+                                        }
+                                    } finally {
+                                        // Account for finished tasks, including rejected or skipped requests.
+                                        synchronized (this) {
+                                            completedRequests++;
+                                            publish((completedRequests * 100) / totalPayloads);
+                                        }
                                     }
                                 };
                                 executor.submit(requestTask);
@@ -1286,7 +1321,12 @@ public class AI_Prompt_Fuzzer implements BurpExtension {
 
                     // Shutdown the executor gracefully
                     executor.shutdown();
-                    executor.awaitTermination(1, TimeUnit.MINUTES);
+                    while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+                        // Keep the run active until all submitted requests have finished.
+                    }
+                    if (batch.isStopped()) {
+                        streamingResponseWarning.reportStoppedBatch(totalPayloads - batch.attemptedRequests());
+                    }
                     isSendPayloadsRunning = false;
                     return null;
                 }
